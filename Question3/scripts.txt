@@ -1,0 +1,215 @@
+/* SECTION: Creation of tables */
+-- Resources table: Core table for books, businesses, websites, etc.
+CREATE TABLE Resources (
+    ResourceID INT AUTO_INCREMENT PRIMARY KEY,
+    Name VARCHAR(255) NOT NULL,
+    Type VARCHAR(50) NOT NULL CHECK (Type IN ('Book', 'Business', 'Website')),
+    Description TEXT NOT NULL
+);
+
+-- Contacts table: Stores all actual contact points (business owners, managers, authors if needed)
+CREATE TABLE Contacts (
+    ContactID INT AUTO_INCREMENT PRIMARY KEY,
+    Name VARCHAR(255) NOT NULL,
+    Role VARCHAR(100) NULL,  -- e.g., "Owner", "Manager", "Administrator"
+    Email VARCHAR(255) NULL,
+    Phone VARCHAR(20) NULL
+);
+
+-- Authors table: Stores authors, but not necessarily contacts
+CREATE TABLE Authors (
+    AuthorID INT AUTO_INCREMENT PRIMARY KEY,
+    Name VARCHAR(255) NOT NULL,
+    ContactID INT NULL,  -- Optional link if the author is also a contact
+    FOREIGN KEY (ContactID) REFERENCES Contacts(ContactID) ON DELETE SET NULL
+);
+
+-- Junction table for linking resources and authors
+CREATE TABLE ResourceAuthors (
+    ResourceID INT NOT NULL,
+    AuthorID INT NOT NULL,
+    PRIMARY KEY (ResourceID, AuthorID),
+    FOREIGN KEY (ResourceID) REFERENCES Resources(ResourceID) ON DELETE CASCADE,
+    FOREIGN KEY (AuthorID) REFERENCES Authors(AuthorID) ON DELETE CASCADE
+);
+
+-- Junction table for linking resources and contacts
+CREATE TABLE ResourceContacts (
+    ResourceID INT NOT NULL,
+    ContactID INT NOT NULL,
+    PRIMARY KEY (ResourceID, ContactID),
+    FOREIGN KEY (ResourceID) REFERENCES Resources(ResourceID) ON DELETE CASCADE,
+    FOREIGN KEY (ContactID) REFERENCES Contacts(ContactID) ON DELETE CASCADE
+);
+
+-- Tags table: Stores descriptive tags
+CREATE TABLE Tags (
+    TagID INT AUTO_INCREMENT PRIMARY KEY,
+    Name VARCHAR(50) UNIQUE NOT NULL
+);
+
+-- Junction table for linking resources and tags
+CREATE TABLE ResourceTags (
+    ResourceID INT NOT NULL,
+    TagID INT NOT NULL,
+    PRIMARY KEY (ResourceID, TagID),
+    FOREIGN KEY (ResourceID) REFERENCES Resources(ResourceID) ON DELETE CASCADE,
+    FOREIGN KEY (TagID) REFERENCES Tags(TagID) ON DELETE CASCADE
+);
+
+-- Congregations table: Stores congregations that receive recommendations
+CREATE TABLE Congregations (
+    CongregationID INT AUTO_INCREMENT PRIMARY KEY,
+    Name VARCHAR(255) NOT NULL,
+    Location VARCHAR(255) NULL
+);
+
+-- Staff table: Stores staff members who make recommendations
+CREATE TABLE Staff (
+    StaffID INT AUTO_INCREMENT PRIMARY KEY,
+    Name VARCHAR(255) NOT NULL,
+    Email VARCHAR(255) NULL
+);
+
+-- Recommendations table: Tracks who recommended which resource to which congregation and when
+CREATE TABLE Recommendations (
+    RecommendationID INT AUTO_INCREMENT PRIMARY KEY,
+    ResourceID INT NOT NULL,
+    StaffID INT NOT NULL,
+    CongregationID INT NOT NULL,
+    RecommendationDate DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    Notes TEXT NULL,
+    FOREIGN KEY (ResourceID) REFERENCES Resources(ResourceID) ON DELETE CASCADE,
+    FOREIGN KEY (StaffID) REFERENCES Staff(StaffID) ON DELETE CASCADE,
+    FOREIGN KEY (CongregationID) REFERENCES Congregations(CongregationID) ON DELETE CASCADE
+);
+
+/* SECTION: Procedure */
+-- Procedure to ensure resources have at least one tag
+DELIMITER $$
+
+CREATE PROCEDURE InsertResourceWithTags(
+    IN resource_name VARCHAR(255),
+    IN resource_type VARCHAR(50),
+    IN resource_description TEXT,
+    IN tag_ids TEXT   -- A comma-separated list of TagIDs to be associated with the resource
+)
+BEGIN
+    DECLARE new_resource_id INT;
+    
+    -- Start a transaction
+    START TRANSACTION;
+    
+    -- Step 1: Insert the resource into the Resources table
+    INSERT INTO Resources (Name, Type, Description)
+    VALUES (resource_name, resource_type, resource_description);
+    
+    -- Get the newly inserted ResourceID
+    SET new_resource_id = LAST_INSERT_ID();
+    
+    -- Step 2: Check if tags are provided
+    IF tag_ids IS NULL OR tag_ids = '' THEN
+        -- If no tags are provided, raise an error and rollback the transaction
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Resource must have at least one tag.';
+    ELSE
+        -- Step 3: Insert the tags into the ResourceTags table
+        -- Split the comma-separated list of tag IDs and associate them with the new resource
+        SET @tag_id_list = tag_ids;
+        WHILE LOCATE(',', @tag_id_list) > 0 DO
+            INSERT INTO ResourceTags (ResourceID, TagID)
+            VALUES (new_resource_id, CAST(SUBSTRING_INDEX(@tag_id_list, ',', 1) AS INT));
+            SET @tag_id_list = SUBSTRING(@tag_id_list, LOCATE(',', @tag_id_list) + 1);
+        END WHILE;
+
+        -- Insert the last tag (after the last comma)
+        INSERT INTO ResourceTags (ResourceID, TagID)
+        VALUES (new_resource_id, CAST(@tag_id_list AS INT));
+    END IF;
+
+    -- Commit the transaction if everything is fine
+    COMMIT;
+    
+END $$
+
+DELIMITER ;
+
+/* SECTION: Sample Data Insertion */
+
+-- Insert tags first since resources will need at least one tag
+INSERT INTO Tags (Name) VALUES ('Leadership');
+INSERT INTO Tags (Name) VALUES ('Spiritual Growth');
+INSERT INTO Tags (Name) VALUES ('Youth Ministry');
+
+-- Insert contacts (e.g., business owners or managers)
+INSERT INTO Contacts (Name, Role, Email, Phone) 
+VALUES ('John Doe', 'Owner', 'johndoe@example.com', '555-1234');
+INSERT INTO Contacts (Name, Role, Email, Phone) 
+VALUES ('Jane Smith', 'Manager', 'janesmith@example.com', '555-5678');
+INSERT INTO Contacts (Name, Role, Email, Phone)
+VALUES ('Mark Johnson', 'Author', 'markjohnson@example.com', '555-9876');
+
+-- Insert authors
+INSERT INTO Authors (Name, ContactID) 
+VALUES ('Mark Johnson', 3);  -- Mark Johnson is contactable
+
+-- Insert congregations
+INSERT INTO Congregations (Name, Location) 
+VALUES ('First Baptist Church', 'Indianapolis, IN');
+INSERT INTO Congregations (Name, Location) 
+VALUES ('Grace Community Church', 'Fort Wayne, IN');
+
+-- Insert staff members who will make the recommendations
+INSERT INTO Staff (Name, Email) 
+VALUES ('Alice Cooper', 'alice.cooper@cfc.org');
+INSERT INTO Staff (Name, Email) 
+VALUES ('Bob White', 'bob.white@cfc.org');
+
+-- Use the stored procedure to insert a resource (Book) with tags
+CALL InsertResourceWithTags(
+    'The Leadership Bible',       -- Resource Name
+    'Book',                       -- Resource Type
+    'A Bible designed to help leaders grow in faith and leadership.',  -- Resource Description
+    '1,2'                         -- TagIDs (Leadership and Spiritual Growth)
+);
+
+-- Use the stored procedure to insert a resource (Website) with tags
+CALL InsertResourceWithTags(
+    'Church Growth Online',       -- Resource Name
+    'Website',                    -- Resource Type
+    'A website with strategies and resources for growing church congregations.', -- Resource Description
+    '1,3'                         -- TagIDs (Leadership and Youth Ministry)
+);
+
+/* Insert recommendations for resources to congregations */
+-- First recommendation: Alice Cooper recommends 'The Leadership Bible' to 'First Baptist Church'
+INSERT INTO Recommendations (ResourceID, StaffID, CongregationID, Notes) 
+VALUES (1, 1, 1, 'Recommended to enhance leadership development.');
+
+-- Second recommendation: Bob White recommends 'Church Growth Online' to 'Grace Community Church'
+INSERT INTO Recommendations (ResourceID, StaffID, CongregationID, Notes) 
+VALUES (2, 2, 2, 'Great resource for growing youth ministry.');
+
+/* Link authors to resources */
+-- Linking Mark Johnson as the author of 'The Leadership Bible'
+INSERT INTO ResourceAuthors (ResourceID, AuthorID) 
+VALUES (1, 1);  -- Mark Johnson is the author
+
+/* Link contacts to resources */
+-- Linking John Doe as a contact for 'The Leadership Bible'
+INSERT INTO ResourceContacts (ResourceID, ContactID) 
+VALUES (1, 3);  -- Mark Johnson is the contact for 'The Leadership Bible'
+
+-- Linking Jane Smith as a contact for 'Church Growth Online'
+INSERT INTO ResourceContacts (ResourceID, ContactID) 
+VALUES (2, 2);  -- Jane Smith is the contact for 'Church Growth Online'
+
+SELECT * FROM Resources;
+SELECT * FROM Contacts;
+SELECT * FROM Authors;
+SELECT * FROM ResourceAuthors;
+SELECT * FROM ResourceContacts;
+SELECT * FROM Tags;
+SELECT * FROM ResourceTags;
+SELECT * FROM Congregations;
+SELECT * FROM Staff;
+SELECT * FROM Recommendations;
